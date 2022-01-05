@@ -68,6 +68,8 @@ threadsafety = 1
 #: This module uses extended python format codes
 paramstyle = 'pyformat'
 
+_accepted_paramstyles = ('pyformat', 'qmark')
+
 
 class _TdsLogin:
     pass
@@ -181,6 +183,7 @@ class Connection(object):
         self._tzinfo_factory = None
         self._key = None
         self._pooling = False
+        self.paramstyle = paramstyle
 
     @property
     def as_dict(self):
@@ -506,6 +509,14 @@ class Connection(object):
                 raise InterfaceError('Results are still pending on connection')
             self._active_cursor = cursor
 
+    def __setattr__(self, name, value):
+        if name == 'paramstyle':
+            if value not in _accepted_paramstyles:
+                ValueError(NotSupportedError,
+                           'paramstyle="' + value + '" not in:' + repr(
+                                               _accepted_paramstyles))
+        object.__setattr__(self, name, value)
+
 
 class Cursor(six.Iterator):
     """
@@ -517,6 +528,7 @@ class Cursor(six.Iterator):
         self.arraysize = 1
         self._session = session
         self._tzinfo_factory = tzinfo_factory
+        self.paramstyle = conn.paramstyle
 
     def _assert_open(self):
         conn = self._conn
@@ -727,6 +739,8 @@ class Cursor(six.Iterator):
         :param operation: SQL statement
         :type operation: str
         """
+        if self.paramstyle == 'qmark':
+            operation = self._qmark_to_pyformat(operation)
         conn = self._assert_open()
         conn._try_activate_cursor(self)
         self._execute(operation, params)
@@ -1002,6 +1016,24 @@ class Cursor(six.Iterator):
         self.execute(operation)
         self._session.submit_bulk(metadata, rows)
         self._session.process_simple_request()
+
+    @staticmethod
+    def _qmark_to_pyformat(operation):  # convert '?' paramstyle query to '%s'
+        # idea: https://github.com/mhammond/pywin32/blob/main/adodbapi/apibase.py
+        out_operation = ''
+        chunks = operation.split("'")
+        in_quotes = False  # an SQL query cannot start in a quoted string
+        for chunk in chunks:
+            if in_quotes:
+                if out_operation != '' and chunk == '':  # double "'" to quote single one
+                    out_operation = out_operation[:-1]  # take one away
+                else:
+                    out_operation += "'" + chunk + "'"  # unchanged quoted string
+            else:  # in SQL code: look for '?' to replace with '%s'
+                split = chunk.split('?')
+                out_operation += "%s".join(split)
+            in_quotes = not in_quotes  # every other chunk is a quoted string
+        return out_operation
 
 
 class _MarsCursor(Cursor):
